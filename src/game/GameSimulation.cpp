@@ -1,6 +1,7 @@
 #include "GameSimulation.hpp"
 
 #include "../engine/core/Config.hpp"
+#include "data/AssetStandards.hpp"
 #include "data/GameData.hpp"
 #include <SFML/Graphics/CircleShape.hpp>
 #include <SFML/Graphics/RectangleShape.hpp>
@@ -37,6 +38,66 @@ namespace game
 {
 GameSimulation::GameSimulation() = default;
 
+void GameSimulation::configurePlayerSpriteLayout(const data::SpriteSheetConfig &config)
+{
+    Entity *player = world_.entities.find(world_.localPlayerId);
+    if (player == nullptr || !player->animation || !player->render)
+        return;
+
+    sf::Vector2i frameSize{
+        std::max(1, config.frameSize.x),
+        std::max(1, config.frameSize.y)};
+    const int columns = std::max(1, config.columns);
+    const int rows = std::max(1, config.rows);
+
+    auto &anim = *player->animation;
+    anim.frameSize = frameSize;
+    anim.framesPerRow = config.animated ? columns : 1;
+    anim.rowIdle = std::clamp(config.idleRow, 0, rows - 1);
+    anim.rowWalk = std::clamp(config.walkRow, 0, rows - 1);
+    anim.currentRow = anim.rowIdle;
+    anim.currentFrame = 0;
+    anim.accumulator = 0.f;
+    anim.playing = false;
+
+    player->render->sourceRect = config.sourceRect.has_value()
+                                     ? config.sourceRect
+                                     : std::optional<sf::IntRect>(sf::IntRect({0, anim.rowIdle * frameSize.y}, frameSize));
+    player->render->drawSize = {frameSize.x * config.drawScale, frameSize.y * config.drawScale};
+}
+
+void GameSimulation::configureEnemySpriteLayout(const data::SpriteSheetConfig &config)
+{
+    sf::Vector2i frameSize{
+        std::max(1, config.frameSize.x),
+        std::max(1, config.frameSize.y)};
+    const int columns = std::max(1, config.columns);
+    const int rows = std::max(1, config.rows);
+
+    for (auto &entityPtr : world_.entities.all())
+    {
+        Entity &entity = *entityPtr;
+        if (!entity.alive() || entity.kind() != data::EntityKind::Enemy || !entity.animation || !entity.render)
+            continue;
+
+        auto &anim = *entity.animation;
+        anim.frameSize = frameSize;
+        anim.framesPerRow = config.animated ? columns : 1;
+        anim.rowIdle = std::clamp(config.idleRow, 0, rows - 1);
+        anim.rowWalk = std::clamp(config.walkRow, 0, rows - 1);
+        anim.currentRow = anim.rowIdle;
+        anim.currentFrame = 0;
+        anim.accumulator = 0.f;
+        anim.playing = false;
+        anim.frameTime = 0.16f;
+
+        entity.render->sourceRect = config.sourceRect.has_value()
+                                        ? config.sourceRect
+                                        : std::optional<sf::IntRect>(sf::IntRect({0, anim.rowIdle * frameSize.y}, frameSize));
+        entity.render->drawSize = {frameSize.x * config.drawScale, frameSize.y * config.drawScale};
+    }
+}
+
 void GameSimulation::initializePrototypeWorld()
 {
     world_ = World{};
@@ -48,11 +109,18 @@ void GameSimulation::initializePrototypeWorld()
     player.health = HealthComponent{100, 100};
     player.survival = SurvivalStatsComponent{};
     player.inventory = InventoryComponent{};
-    player.render = RenderComponent{sf::Color(80, 200, 255), sf::Color::White, 2.f, {120.f, 120.f}};
-    player.render->sourceRect = sf::IntRect({0, 0}, {16, 16});
+    player.render = RenderComponent{
+        sf::Color(80, 200, 255),
+        sf::Color::White,
+        2.f,
+        assets::PlayerDrawSize,
+        std::nullopt};
+    player.render->sourceRect = assets::PlayerDefaultSourceRect;
     // Disabled by default until a real spritesheet is provided/configured.
     // For a valid spritesheet, set frameSize and framesPerRow accordingly.
     player.animation = AnimationComponent{};
+    player.animation->frameSize = assets::PlayerFrameSize;
+    player.animation->framesPerRow = 1; // sube a >1 cuando uses spritesheet real
     player.replication = NetworkReplicationComponent{1, true};
     world_.localPlayerId = player.id();
 
@@ -65,7 +133,12 @@ void GameSimulation::initializePrototypeWorld()
         Entity &tree = world_.entities.create(data::EntityKind::Tree);
         tree.transform = TransformComponent{{xDist(rng), yDist(rng)}, {34.f, 34.f}};
         tree.gatherable = GatherableComponent{data::ResourceType::Wood, 3, 1, 56.f, false};
-        tree.render = RenderComponent{sf::Color(50, 130, 60), sf::Color(30, 70, 30), 2.f};
+        tree.render = RenderComponent{
+            sf::Color(50, 130, 60),
+            sf::Color(30, 70, 30),
+            2.f,
+            {0.f, 0.f},
+            std::nullopt};
     }
 
     for (int i = 0; i < 10; ++i)
@@ -73,7 +146,12 @@ void GameSimulation::initializePrototypeWorld()
         Entity &rock = world_.entities.create(data::EntityKind::Rock);
         rock.transform = TransformComponent{{xDist(rng), yDist(rng)}, {30.f, 30.f}};
         rock.gatherable = GatherableComponent{data::ResourceType::Stone, 2, 1, 52.f, false};
-        rock.render = RenderComponent{sf::Color(120, 120, 130), sf::Color(70, 70, 80), 2.f};
+        rock.render = RenderComponent{
+            sf::Color(120, 120, 130),
+            sf::Color(70, 70, 80),
+            2.f,
+            {0.f, 0.f},
+            std::nullopt};
     }
 
     for (int i = 0; i < 12; ++i)
@@ -81,7 +159,12 @@ void GameSimulation::initializePrototypeWorld()
         Entity &bush = world_.entities.create(data::EntityKind::Bush);
         bush.transform = TransformComponent{{xDist(rng), yDist(rng)}, {24.f, 24.f}};
         bush.gatherable = GatherableComponent{data::ResourceType::Fiber, 2, 1, 46.f, false};
-        bush.render = RenderComponent{sf::Color(70, 170, 80), sf::Color(30, 90, 40), 1.f};
+        bush.render = RenderComponent{
+            sf::Color(70, 170, 80),
+            sf::Color(30, 90, 40),
+            1.f,
+            {0.f, 0.f},
+            std::nullopt};
     }
 
     for (int i = 0; i < 4; ++i)
@@ -92,8 +175,17 @@ void GameSimulation::initializePrototypeWorld()
         enemy.health = HealthComponent{30, 30};
         enemy.ai = AIComponent{};
         enemy.damageable = DamageableComponent{7, 0.6f, 0.f};
-        enemy.render = RenderComponent{sf::Color(220, 70, 70), sf::Color(100, 20, 20), 2.f, {42.f, 42.f}};
-        enemy.render->sourceRect = sf::IntRect({0, 0}, {16, 16});
+        enemy.render = RenderComponent{
+            sf::Color(220, 70, 70),
+            sf::Color(100, 20, 20),
+            2.f,
+            assets::EnemyDrawSize,
+            std::nullopt};
+        enemy.render->sourceRect = assets::EnemyDefaultSourceRect;
+        enemy.animation = AnimationComponent{};
+        enemy.animation->frameSize = assets::EnemyFrameSize;
+        enemy.animation->framesPerRow = 1;
+        enemy.animation->frameTime = 0.16f;
         enemy.replication = NetworkReplicationComponent{static_cast<NetId>(10 + i), true};
     }
 }
@@ -177,6 +269,44 @@ void GameSimulation::tick(float dt)
 
     aiSystem_.update(world_, dt);
     movementSystem_.update(world_, dt);
+
+    for (auto &entityPtr : world_.entities.all())
+    {
+        Entity &entity = *entityPtr;
+        if (!entity.alive() || entity.kind() != data::EntityKind::Enemy || !entity.animation || !entity.movement)
+            continue;
+
+        auto &anim = *entity.animation;
+        const auto &vel = entity.movement->velocity;
+        const bool moving = (vel.x * vel.x + vel.y * vel.y) > 1.f;
+
+        if (anim.frameSize.x <= 0 || anim.frameSize.y <= 0 || anim.framesPerRow <= 1)
+        {
+            anim.currentFrame = 0;
+            anim.accumulator = 0.f;
+            anim.playing = false;
+            continue;
+        }
+
+        anim.currentRow = moving ? anim.rowWalk : anim.rowIdle;
+        anim.playing = moving;
+
+        if (!moving)
+        {
+            anim.currentFrame = 0;
+            anim.accumulator = 0.f;
+        }
+        else if (anim.frameTime > 0.f)
+        {
+            anim.accumulator += dt;
+            while (anim.accumulator >= anim.frameTime)
+            {
+                anim.accumulator -= anim.frameTime;
+                anim.currentFrame = (anim.currentFrame + 1) % anim.framesPerRow;
+            }
+        }
+    }
+
     collisionSystem_.update(world_, dt);
     damageSystem_.update(world_);
     gatherSystem_.update(world_, inventorySystem_);

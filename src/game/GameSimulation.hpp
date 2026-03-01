@@ -3,6 +3,7 @@
 #include "systems/AISystem.hpp"
 #include "systems/CollisionSystem.hpp"
 #include "systems/CraftingSystem.hpp"
+#include "data/SpriteSheetConfig.hpp"
 #include "systems/DamageSystem.hpp"
 #include "systems/GatherSystem.hpp"
 #include "systems/InventorySystem.hpp"
@@ -20,6 +21,8 @@ public:
     GameSimulation();
 
     void initializePrototypeWorld();
+    void configurePlayerSpriteLayout(const data::SpriteSheetConfig &config);
+    void configureEnemySpriteLayout(const data::SpriteSheetConfig &config);
     void setLocalMovementInput(float x, float y, bool sprint);
     void setLocalActionInput(bool interact, bool craftAxe);
     void tick(float dt);

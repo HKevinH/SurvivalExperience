@@ -1,8 +1,8 @@
 #include "ClientApp.hpp"
 
 #include "../../engine/core/Config.hpp"
+#include "../../game/data/AssetStandards.hpp"
 #include <SFML/Graphics/Color.hpp>
-#include <SFML/Graphics/Image.hpp>
 #include <SFML/Graphics/RectangleShape.hpp>
 #include <SFML/Graphics/Sprite.hpp>
 #include <SFML/System/Clock.hpp>
@@ -10,83 +10,131 @@
 #include <SFML/Window/Keyboard.hpp>
 #include <algorithm>
 #include <iostream>
+#include <vector>
 
 namespace app::client
 {
 namespace
 {
-std::optional<sf::IntRect> computeOpaqueBounds(const sf::Texture &texture)
+game::data::SpriteSheetConfig defaultConfigFor(const std::string &id, sf::Vector2u textureSize)
 {
-    const sf::Image image = texture.copyToImage();
-    const sf::Vector2u size = image.getSize();
-    if (size.x == 0 || size.y == 0)
-        return std::nullopt;
-
-    unsigned int minX = size.x;
-    unsigned int minY = size.y;
-    unsigned int maxX = 0;
-    unsigned int maxY = 0;
-    bool found = false;
-
-    for (unsigned int y = 0; y < size.y; ++y)
+    using game::data::SpriteSheetConfig;
+    SpriteSheetConfig cfg{};
+    if (id == "player")
     {
-        for (unsigned int x = 0; x < size.x; ++x)
-        {
-            const sf::Color px = image.getPixel({x, y});
-            if (px.a == 0)
-                continue;
-
-            found = true;
-            minX = std::min(minX, x);
-            minY = std::min(minY, y);
-            maxX = std::max(maxX, x);
-            maxY = std::max(maxY, y);
-        }
+        cfg.frameSize = game::assets::PlayerFrameSize;
+        cfg.columns = 0;
+        cfg.rows = 0;
+        cfg.idleRow = 0;
+        cfg.walkRow = 1;
+        cfg.drawScale = game::assets::PlayerScale;
+        cfg.animated = true;
+    }
+    else
+    {
+        cfg.frameSize = game::assets::EnemyFrameSize;
+        cfg.columns = 0;
+        cfg.rows = 0;
+        cfg.idleRow = 0;
+        cfg.walkRow = 1;
+        cfg.drawScale = game::assets::EnemyScale;
+        cfg.animated = true;
     }
 
-    if (!found)
-        return std::nullopt;
+    std::string err;
+    if (!game::data::validateAndFinalizeSpriteSheetConfig(cfg, textureSize, err))
+    {
+        cfg = SpriteSheetConfig{};
+        cfg.frameSize = {static_cast<int>(textureSize.x), static_cast<int>(textureSize.y)};
+        cfg.columns = 1;
+        cfg.rows = 1;
+        cfg.idleRow = 0;
+        cfg.walkRow = 0;
+        cfg.drawScale = (id == "player") ? game::assets::PlayerScale : game::assets::EnemyScale;
+        cfg.animated = false;
+    }
 
-    return sf::IntRect(
-        {static_cast<int>(minX), static_cast<int>(minY)},
-        {static_cast<int>(maxX - minX + 1), static_cast<int>(maxY - minY + 1)});
+    return cfg;
 }
 } // namespace
 
-ClientApp::ClientApp()
+ClientApp::ClientApp(const std::filesystem::path &executablePath)
     : window_(sf::VideoMode({engine::config::WindowWidth, engine::config::WindowHeight}), "Mini Survival Coop Prototype"),
-      network_(engine::NetworkMode::Client)
+      network_(engine::NetworkMode::Client),
+      executablePath_(executablePath),
+      executableDir_(std::filesystem::absolute(executablePath).parent_path())
 {
     window_.setFramerateLimit(60);
     simulation_.initializePrototypeWorld();
-    hasPlayerTexture_ =
-        resources_.loadTexture("player", "src/assets/player.png") ||
-        resources_.loadTexture("player", "assets/player.png") ||
-        resources_.loadTexture("player", "build/assets/player.png");
-    if (!hasPlayerTexture_)
-        std::cout << "[Client] No se pudo cargar player sprite (src/assets/player.png)\n";
-    else if (sf::Texture *playerTex = resources_.getTexture("player"))
-    {
-        if (auto rect = computeOpaqueBounds(*playerTex))
-            opaqueSourceRects_["player"] = *rect;
-    }
 
-    hasEnemyTexture_ =
-        resources_.loadTexture("enemy", "src/assets/enemy.png") ||
-        resources_.loadTexture("enemy", "src/assets/enemies/enemy.png") ||
-        resources_.loadTexture("enemy", "assets/enemy.png") ||
-        resources_.loadTexture("enemy", "assets/enemies/enemy.png") ||
-        resources_.loadTexture("enemy", "build/assets/enemy.png") ||
-        resources_.loadTexture("enemy", "build/assets/enemies/enemy.png");
+    hasPlayerTexture_ = loadTextureWithConfig("player", "player.png");
+    hasEnemyTexture_ = loadTextureWithConfig("enemy", "enemy.png");
+
+    if (!hasPlayerTexture_)
+        std::cout << "[Client] player.png no se pudo cargar.\n";
     if (!hasEnemyTexture_)
-        std::cout << "[Client] No se pudo cargar enemy sprite (esperado en src/assets/enemy.png o src/assets/enemies/enemy.png)\n";
-    else if (sf::Texture *enemyTex = resources_.getTexture("enemy"))
+        std::cout << "[Client] enemy.png no se pudo cargar.\n";
+
+    if (hasPlayerTexture_)
     {
-        if (auto rect = computeOpaqueBounds(*enemyTex))
-            opaqueSourceRects_["enemy"] = *rect;
+        const auto &cfg = spriteConfigs_.at("player");
+        simulation_.configurePlayerSpriteLayout(cfg);
+    }
+    if (hasEnemyTexture_)
+    {
+        const auto &cfg = spriteConfigs_.at("enemy");
+        simulation_.configureEnemySpriteLayout(cfg);
     }
 
     network_.startClient("127.0.0.1", 7777);
+}
+
+std::filesystem::path ClientApp::resolveAssetPath(const std::string &fileName) const
+{
+    const std::vector<std::filesystem::path> candidates{
+        executableDir_ / "assets" / fileName,
+        executableDir_.parent_path() / "src" / "assets" / fileName,
+        executableDir_.parent_path() / "assets" / fileName,
+        std::filesystem::current_path() / "src" / "assets" / fileName,
+        std::filesystem::current_path() / "assets" / fileName};
+
+    for (const auto &path : candidates)
+    {
+        if (std::filesystem::exists(path))
+            return path;
+    }
+
+    return {};
+}
+
+bool ClientApp::loadTextureWithConfig(const std::string &id, const std::string &fileName)
+{
+    const std::filesystem::path texPath = resolveAssetPath(fileName);
+    if (texPath.empty())
+        return false;
+
+    if (!resources_.loadTexture(id, texPath.string()))
+        return false;
+
+    sf::Texture *texture = resources_.getTexture(id);
+    if (texture == nullptr)
+        return false;
+
+    game::data::SpriteSheetConfig cfg{};
+    const std::filesystem::path cfgPath = texPath.parent_path() / (texPath.stem().string() + ".spritecfg");
+    const bool hasExternalCfg = game::data::loadSpriteSheetConfig(cfgPath.string(), cfg);
+    if (!hasExternalCfg)
+        cfg = defaultConfigFor(id, texture->getSize());
+
+    std::string err;
+    if (!game::data::validateAndFinalizeSpriteSheetConfig(cfg, texture->getSize(), err))
+    {
+        std::cout << "[Client] Config invalida en " << cfgPath << " -> " << err << ". Usando fallback.\n";
+        cfg = defaultConfigFor(id, texture->getSize());
+    }
+
+    spriteConfigs_[id] = cfg;
+    return true;
 }
 
 void ClientApp::run()
@@ -158,72 +206,40 @@ void ClientApp::render()
         if (!entity.transform)
             return;
 
-        if (sf::Texture *texture = resources_.getTexture(textureId))
+        sf::Texture *texture = resources_.getTexture(textureId);
+        if (texture == nullptr)
+            return;
+
+        sf::Sprite sprite(*texture);
+        const auto texSize = texture->getSize();
+        sf::Vector2f baseSize(static_cast<float>(texSize.x), static_cast<float>(texSize.y));
+
+        if (entity.animation && entity.animation->frameSize.x > 0 && entity.animation->frameSize.y > 0 &&
+            entity.animation->framesPerRow > 1)
         {
-            sf::Sprite sprite(*texture);
-            const auto texSize = texture->getSize();
-
-            sf::Vector2f baseSize(static_cast<float>(texSize.x), static_cast<float>(texSize.y));
-            bool appliedRect = false;
-            if (entity.animation && entity.animation->frameSize.x > 0 && entity.animation->frameSize.y > 0)
-            {
-                const auto &anim = *entity.animation;
-                const int frameX = anim.currentFrame * anim.frameSize.x;
-                const int frameY = anim.currentRow * anim.frameSize.y;
-                const bool validRect =
-                    frameX >= 0 && frameY >= 0 &&
-                    anim.frameSize.x > 0 && anim.frameSize.y > 0 &&
-                    frameX + anim.frameSize.x <= static_cast<int>(texSize.x) &&
-                    frameY + anim.frameSize.y <= static_cast<int>(texSize.y);
-
-                if (validRect)
-                {
-                    sprite.setTextureRect(sf::IntRect({frameX, frameY}, anim.frameSize));
-                    baseSize = {static_cast<float>(anim.frameSize.x), static_cast<float>(anim.frameSize.y)};
-                    appliedRect = true;
-                }
-            }
-
-            if (!appliedRect && entity.render && entity.render->sourceRect.has_value())
-            {
-                const sf::IntRect rect = *entity.render->sourceRect;
-                const bool validRect =
-                    rect.position.x >= 0 && rect.position.y >= 0 &&
-                    rect.size.x > 0 && rect.size.y > 0 &&
-                    rect.position.x + rect.size.x <= static_cast<int>(texSize.x) &&
-                    rect.position.y + rect.size.y <= static_cast<int>(texSize.y);
-
-                if (validRect)
-                {
-                    sprite.setTextureRect(rect);
-                    baseSize = {static_cast<float>(rect.size.x), static_cast<float>(rect.size.y)};
-                    appliedRect = true;
-                }
-            }
-
-            if (!appliedRect)
-            {
-                const auto it = opaqueSourceRects_.find(textureId);
-                if (it != opaqueSourceRects_.end())
-                {
-                    sprite.setTextureRect(it->second);
-                    baseSize = {static_cast<float>(it->second.size.x), static_cast<float>(it->second.size.y)};
-                }
-            }
-
-            if (baseSize.x > 0.f && baseSize.y > 0.f)
-            {
-                sprite.setOrigin({baseSize.x * 0.5f, baseSize.y * 0.5f});
-                sf::Vector2f targetSize = entity.transform->size;
-                if (entity.render && entity.render->drawSize.x > 0.f && entity.render->drawSize.y > 0.f)
-                    targetSize = entity.render->drawSize;
-                const float scale = std::min(targetSize.x / baseSize.x, targetSize.y / baseSize.y);
-                sprite.setScale({scale, scale});
-            }
-
-            sprite.setPosition(entity.transform->position);
-            window_.draw(sprite);
+            const auto &anim = *entity.animation;
+            const sf::IntRect rect(
+                {anim.currentFrame * anim.frameSize.x, anim.currentRow * anim.frameSize.y},
+                anim.frameSize);
+            sprite.setTextureRect(rect);
+            baseSize = {static_cast<float>(rect.size.x), static_cast<float>(rect.size.y)};
         }
+        else if (entity.render && entity.render->sourceRect.has_value())
+        {
+            const sf::IntRect rect = *entity.render->sourceRect;
+            sprite.setTextureRect(rect);
+            baseSize = {static_cast<float>(rect.size.x), static_cast<float>(rect.size.y)};
+        }
+
+        sprite.setOrigin({baseSize.x * 0.5f, baseSize.y * 0.5f});
+        sf::Vector2f targetSize = entity.transform->size;
+        if (entity.render && entity.render->drawSize.x > 0.f && entity.render->drawSize.y > 0.f)
+            targetSize = entity.render->drawSize;
+
+        const float scale = std::min(targetSize.x / baseSize.x, targetSize.y / baseSize.y);
+        sprite.setScale({scale, scale});
+        sprite.setPosition(entity.transform->position);
+        window_.draw(sprite);
     };
 
     const game::Entity *player = simulation_.world().entities.find(simulation_.world().localPlayerId);
@@ -278,44 +294,5 @@ void ClientApp::renderHud()
     drawBar({24.f, 24.f}, sf::Color(210, 60, 60), health);
     drawBar({24.f, 46.f}, sf::Color(220, 170, 60), hunger);
     drawBar({24.f, 68.f}, sf::Color(70, 180, 220), energy);
-
-    if (player->inventory)
-    {
-        for (std::size_t i = 0; i < 8; ++i)
-        {
-            sf::RectangleShape slot({32.f, 32.f});
-            slot.setPosition({24.f + static_cast<float>(i) * 38.f, 92.f});
-            slot.setFillColor(sf::Color(70, 70, 80, 220));
-            slot.setOutlineColor(sf::Color::White);
-            slot.setOutlineThickness(i == static_cast<std::size_t>(player->inventory->selectedSlot) ? 2.f : 1.f);
-            window_.draw(slot);
-
-            if (player->inventory->slots[i].occupied)
-            {
-                sf::RectangleShape icon({18.f, 18.f});
-                icon.setPosition({31.f + static_cast<float>(i) * 38.f, 99.f});
-                using game::data::ItemKind;
-                switch (player->inventory->slots[i].item)
-                {
-                case ItemKind::Wood:
-                    icon.setFillColor(sf::Color(139, 94, 60));
-                    break;
-                case ItemKind::Stone:
-                    icon.setFillColor(sf::Color(130, 130, 140));
-                    break;
-                case ItemKind::Fiber:
-                    icon.setFillColor(sf::Color(100, 180, 100));
-                    break;
-                case ItemKind::StoneAxe:
-                    icon.setFillColor(sf::Color(180, 180, 220));
-                    break;
-                case ItemKind::Spear:
-                    icon.setFillColor(sf::Color(210, 180, 130));
-                    break;
-                }
-                window_.draw(icon);
-            }
-        }
-    }
 }
 } // namespace app::client

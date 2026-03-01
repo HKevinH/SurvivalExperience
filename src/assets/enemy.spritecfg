@@ -1,0 +1,10 @@
+# Sprite sheet config for enemy.png
+
+frame_w=16
+frame_h=16
+columns=0
+rows=0
+idle_row=0
+walk_row=1
+draw_scale=2.2
+animated=true

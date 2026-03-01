@@ -1,0 +1,17 @@
+# Sprite sheet config for player.png
+# Values can be changed without recompiling animation logic.
+
+frame_w=16
+frame_h=16
+columns=0
+rows=0
+idle_row=0
+walk_row=1
+draw_scale=3.0
+animated=true
+
+# Optional fixed source rect for static sprite mode:
+# source_x=0
+# source_y=0
+# source_w=16
+# source_h=16
